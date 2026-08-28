@@ -1,4 +1,5 @@
 /refrence/
+/.codegraph/
 .DS_Store
 mac/config.zsh
 windows/config.psd1

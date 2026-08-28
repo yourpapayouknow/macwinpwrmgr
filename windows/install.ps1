@@ -53,7 +53,30 @@ $trigger = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
 Register-ScheduledTask -TaskName $script:Cfg.TaskName -Action $action -Trigger $trigger -Principal $principal -Description 'Reapply MacWinPwrMgr native idle sleep policy at startup.' -Force | Out-Null
 $sleepAction = New-ScheduledTaskAction -Execute $pwsh -Argument "-NoLogo -NoProfile -NonInteractive -File `"$root\sleep.ps1`" -Internal" -WorkingDirectory $root
-Register-ScheduledTask -TaskName $script:Cfg.SleepTaskName -Action $sleepAction -Principal $principal -Description 'Run a MacWinPwrMgr safe S3 request on demand.' -Force | Out-Null
+# 在系统恢复后重新启动安全睡眠检查。
+$resumeSubscription = @'
+<QueryList>
+  <Query Id="0" Path="System">
+    <Select Path="System">*[System[Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1]]</Select>
+  </Query>
+</QueryList>
+'@
+$sleepSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName $script:Cfg.SleepTaskName -Action $sleepAction -Settings $sleepSettings -Principal $principal -Description 'Run a MacWinPwrMgr safe S3 request on demand and after resume.' -Force | Out-Null
+$sleepTaskXml = [xml](Export-ScheduledTask -TaskName $script:Cfg.SleepTaskName)
+$taskNamespace = $sleepTaskXml.DocumentElement.NamespaceURI
+$namespaceManager = [Xml.XmlNamespaceManager]::new($sleepTaskXml.NameTable)
+$namespaceManager.AddNamespace('task', $taskNamespace)
+$triggersNode = $sleepTaskXml.SelectSingleNode('/task:Task/task:Triggers', $namespaceManager)
+$eventTrigger = $sleepTaskXml.CreateElement('EventTrigger', $taskNamespace)
+$subscriptionNode = $sleepTaskXml.CreateElement('Subscription', $taskNamespace)
+$subscriptionNode.InnerText = $resumeSubscription.Trim()
+$delayNode = $sleepTaskXml.CreateElement('Delay', $taskNamespace)
+$delayNode.InnerText = 'PT30S'
+[void]$eventTrigger.AppendChild($subscriptionNode)
+[void]$eventTrigger.AppendChild($delayNode)
+[void]$triggersNode.AppendChild($eventTrigger)
+Register-ScheduledTask -TaskName $script:Cfg.SleepTaskName -Xml $sleepTaskXml.OuterXml -Force | Out-Null
 
 [ordered]@{
     Installed = $true
